@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minestead Map History</title>
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --panel-w: 104px; --grey: #bbb; --grey-hover: #c9c9c9; --grey-dark: #8a8a8a; --edge: rgba(128, 128, 128, .6); }
+  html, body, #map { height: 100%; margin: 0; background: #000; }
+  #logo { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1000;
+          height: 50px; width: auto; pointer-events: none; image-rendering: pixelated;
+          filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .6)); }
+  #compass { position: absolute; top: 20px; right: 32px; z-index: 1000; pointer-events: none; }
+
+  /* Map switch, in the same grey as Dynmap's location box. */
+  /* The map switch and the location box share one width so their edges line up. */
+  .map-picker, .coord-control { width: var(--panel-w); box-sizing: border-box; }
+  .map-picker button { flex: 1; }
+  .map-picker { display: flex; overflow: hidden; border-radius: 5px; background: var(--grey);
+                border: 1px solid var(--edge); font: 600 12px system-ui, sans-serif; }
+  .map-picker button { border: 0; margin: 0; padding: 4px 9px; background: transparent; color: #000;
+                       font: inherit; cursor: pointer; }
+  .map-picker button + button { border-left: 1px solid var(--edge); }
+  .map-picker button:hover { background: var(--grey-hover); }
+  .map-picker button[aria-pressed="true"] { background: var(--grey-dark); color: #fff; cursor: default; }
+  button:focus-visible, #slider:focus-visible { outline: 2px solid #555; outline-offset: 1px; }
+
+  /* Location box, styled like Dynmap's. */
+  .coord-control { color: #000; background: var(--grey); border: 1px solid var(--edge);
+                   border-radius: 5px; padding: 2px 4px; font: 12px system-ui, sans-serif; }
+  .coord-control b { display: block; }
+
+  /* Link button, styled like Dynmap's. */
+  .link-control { padding: 2px; border-radius: 7px; background: rgba(0, 0, 0, .25); }
+  .link-control a { display: block; width: 19px; height: 19px; border-radius: 4px;
+                    background: rgba(255, 255, 255, .75) url(link.png) 50% 50% no-repeat; }
+  .link-control a:hover, .link-control a:focus-visible { background-color: #fff; }
+  .link-note { position: absolute; left: 30px; bottom: 3px; white-space: nowrap; padding: 2px 6px;
+               border-radius: 4px; background: #fff; color: #000; font: 12px system-ui, sans-serif; }
+
+  /* Timeline along the bottom, drawn like a ruler: a tick per snapshot, a block-shaped playhead,
+     and the current date in a tag that rides above the playhead. Square edges to match Dynmap's controls. */
+  #timeline { position: absolute; z-index: 1000; bottom: 12px; left: 50%; transform: translateX(-50%);
+              width: min(680px, calc(100% - 100px)); box-sizing: border-box;
+              display: flex; align-items: center; gap: 10px; padding: 5px 12px 4px 5px;
+              background: var(--grey); border: 1px solid var(--edge); border-radius: 3px; color: #000;
+              font: 11px system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  #play { flex: none; display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+          border: 1px solid #999; border-radius: 3px; background: #fff; color: #222; cursor: pointer; }
+  #play:hover:not(:disabled) { background: #f0f0f0; }
+  #play:disabled { opacity: .5; cursor: default; }
+  #play svg { width: 10px; height: 10px; fill: currentColor; }
+  #play .pause, #play[aria-pressed="true"] .start { display: none; }
+  #play[aria-pressed="true"] .pause { display: block; }
+  .track { flex: 1; min-width: 0; position: relative; --thumb: 8px; }
+  .ticks { position: absolute; left: calc(var(--thumb) / 2); right: calc(var(--thumb) / 2); top: 7px; height: 9px;
+           pointer-events: none; }
+  .ticks span { position: absolute; top: 0; width: 1px; height: 100%; background: #555; }
+  .ends { display: flex; justify-content: space-between; color: #333; }
+  /* --p is 0 at the oldest date and 1 at the newest. The tag slides from left-aligned to right-aligned
+     over the playhead so it never runs off the bar, and its pointer moves with it. */
+  #current { --p: 0; position: absolute; bottom: calc(100% + 8px); transform: translateX(calc(var(--p) * -100%));
+             white-space: nowrap; padding: 2px 6px; border-radius: 2px; background: #333; color: #fff;
+             font-weight: 700; font-size: 12px; pointer-events: none; }
+  #current::after { content: ""; position: absolute; top: 100%; left: calc(4px + (100% - 16px) * var(--p));
+                    border: 4px solid transparent; border-top-color: #333; }
+  #slider { position: relative; display: block; width: 100%; margin: 0; height: 22px; background: transparent;
+            appearance: none; -webkit-appearance: none; cursor: pointer; }
+  #slider:disabled { cursor: default; }
+  #slider::-webkit-slider-runnable-track { height: 2px; background: #555; }
+  #slider::-moz-range-track { height: 2px; background: #555; }
+  #slider::-webkit-slider-thumb { -webkit-appearance: none; width: var(--thumb); height: 18px; margin-top: -8px;
+                                  border-radius: 1px; background: #f2f2f2; border: 1px solid #333; }
+  #slider::-moz-range-thumb { width: 6px; height: 16px; border-radius: 1px; background: #f2f2f2; border: 1px solid #333; }
+
+  @media (max-width: 600px) {
+    #logo { height: 29px; }
+    #compass { top: 8px; right: 8px; width: 50px; height: auto; }
+    #timeline { left: 44px; right: 8px; width: auto; transform: none; }
+  }
+  /* Switching map fades the map out, swaps it, and fades back in once the tiles have loaded. */
+  .leaflet-map-pane { transition: opacity .1s ease; }   /* keep in step with FADE_MS */
+  #map.fading .leaflet-map-pane { opacity: 0; }
+  @media (prefers-reduced-motion: reduce) { .leaflet-map-pane { transition: none; } }
+  /* Scale tiles with hard pixel edges instead of smoothing them (zoomed past native, or Windows display scaling). */
+  .leaflet-tile { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<img id="logo" src="logo.png" alt="Minestead Archive" width="1020" height="150">
+<img id="compass" src="compass.png" alt="" width="83" height="84">
+<div id="timeline">
+  <button id="play" type="button" aria-label="Play timelapse" aria-pressed="false">
+    <svg class="start" viewBox="0 0 12 12"><path d="M2 0l10 6-10 6z"/></svg>
+    <svg class="pause" viewBox="0 0 12 12"><path d="M1 0h3.5v12H1zM7.5 0H11v12H7.5z"/></svg>
+  </button>
+  <div class="track">
+    <output id="current" for="slider"></output>
+    <div class="ticks" id="ticks"></div>
+    <input id="slider" type="range" min="0" max="0" value="0" step="1" aria-label="Snapshot date">
+    <div class="ends"><span id="first"></span><span id="last"></span></div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// Settings copied from the live Dynmap (map.minestead.net/up/configuration).
+// prefix: tile folder. levels: most zoomed-out Dynmap zoom. zoomIn: mapzoomin.
+// worldToMap / mapToWorld: Dynmap's projection between block coordinates and map pixels.
+const MAPS = {
+  surface: { prefix: 't', levels: 7, zoomIn: 1, compass: 'compass.png',
+    worldToMap: [11.31370849898476, 0, -11.313708498984761, -5.6568542494923815, 13.856406460551018, -5.656854249492381],
+    mapToWorld: [0.044194173824159216, -0.08838834764831843, 1.2247448713915894, 0, 0, 1,
+                 -0.04419417382415922, -0.08838834764831842, 1.2247448713915892] },
+  flat: { prefix: 'flat', levels: 5, zoomIn: 1, compass: 'compass_flat.png',
+    worldToMap: [4, 0, 0, 0, 0, -4],
+    mapToWorld: [0.25, 0, 0, 0, 0, 1, 0, -0.25, 0] },
+};
+const DEFAULT = { map: 'surface', zoom: 4, x: 0, z: 0 };   // matches Dynmap's default view (spawn)
+const Y = 64;                                              // Dynmap shows locations at y=64 too
+const HOLD_MS = 900;                                       // how long each date shows while playing
+const MIN_ZOOM = 1;                                       // skip the most zoomed-out level (the world as a speck)
+const BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+
+// Tiles are read straight from store/<snapshot>/world/<prefix>/<dynmap zoom>/<x>_<y>.jpg.
+// The first snapshot is the full baseline; later ones hold only tiles that changed.
+// store/index.json lists, for every tile that changed after the baseline, which snapshots have a copy.
+let tileIndex = { snapshots: [], changed: {} };
+
+// The newest copy of a tile on or before snapshot `upTo`, or null if the tile didn't exist yet.
+function tileUrl(key, upTo) {
+  const copies = tileIndex.changed[key];
+  let pick = 0;                                    // not listed: only the baseline has it
+  if (copies) {
+    pick = null;
+    for (const c of copies) { if (parseInt(c) <= upTo) pick = c; else break; }
+    if (pick === null) return BLANK;
+  }
+  const n = parseInt(pick), ext = typeof pick === 'string' ? pick.slice(String(n).length) : '.jpg';
+  return `store/${tileIndex.snapshots[n]}/${key}${ext}`;
+}
+
+// Dynmap zoom 0 is the most detailed; each level up covers 2x2 tiles of the one below.
+const DynmapTiles = L.TileLayer.extend({
+  getTileUrl(c) {
+    const dz = this.options.levels - c.z;          // Leaflet zoom -> Dynmap zoom
+    const s = 1 << dz;                             // base tiles per tile at this zoom
+    // Dynmap's y axis points up. A zoomed-out tile is named by its top-left child,
+    // so it covers x..x+s-1 and y-s+1..y (checked by comparing tiles with their children).
+    const x = c.x * s, y = -c.y * s;
+    return tileUrl(`world/${this.options.prefix}/${dz}/${x}_${y}`, this.options.snapshot);
+  }
+});
+
+const map = L.map('map', { crs: L.CRS.Simple, attributionControl: false });
+const $ = id => document.getElementById(id);
+// dates[i] is snapshot i's date (YYYY-MM-DD), used for labels and links.
+let dates = [], dateIdx = 0, layer, cfg, mapName = DEFAULT.map;
+
+// Block coordinates <-> map position. At the sharpest zoom, map pixel (px, py) is Dynmap's (px, 128 - py).
+function toLatLng(x, z, c = cfg) {
+  const w = c.worldToMap;
+  const mx = w[0] * x + w[1] * Y + w[2] * z, my = w[3] * x + w[4] * Y + w[5] * z;
+  return map.unproject([mx, 128 - my], c.levels);
+}
+function toWorld(latlng, c = cfg) {
+  const p = map.project(latlng, c.levels), mx = p.x, my = 128 - p.y, m = c.mapToWorld;
+  return { x: Math.round(m[0] * mx + m[1] * my + m[2] * Y), z: Math.round(m[6] * mx + m[7] * my + m[8] * Y) };
+}
+
+// Address bar: #date/map/zoom/x/z, e.g. #2026-11-08/surface/4/0/0
+function link() {
+  const { x, z } = toWorld(map.getCenter());
+  return `${location.origin}${location.pathname}#${dates[dateIdx]}/${mapName}/${map.getZoom()}/${x}/${z}`;
+}
+function readHash() {
+  const [date, name, zoom, x, z] = decodeURIComponent(location.hash.slice(1)).split('/');
+  return { date, map: MAPS[name] ? name : DEFAULT.map,
+           zoom: isNaN(+zoom) || zoom === '' ? DEFAULT.zoom : +zoom,
+           x: isNaN(+x) || x === undefined ? DEFAULT.x : +x, z: isNaN(+z) || z === undefined ? DEFAULT.z : +z };
+}
+
+// The site leaves off Dynmap's sharpest zoom level(s) to stay small (index.json "sharpest").
+// nativeZoom: the closest Leaflet zoom that has real tiles. maxZoom: one step past it, like Dynmap's mapzoomin.
+const nativeZoom = () => cfg.levels - (tileIndex.sharpest || 0);
+const maxZoom = () => nativeZoom() + cfg.zoomIn;
+
+function newLayer() {
+  return new DynmapTiles('', { snapshot: dateIdx, prefix: cfg.prefix, levels: cfg.levels, tileSize: 128,
+                               minZoom: MIN_ZOOM, maxNativeZoom: nativeZoom(), maxZoom: maxZoom(), errorTileUrl: BLANK, keepBuffer: 4 });
+}
+
+// Switching map: quick fade out, swap, fade back in once the new tiles have loaded.
+const mapEl = $('map');
+const FADE_MS = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 100;   // matches the CSS transition
+let switchId = 0;
+function showMap(view) {
+  if (!view && cfg) view = { ...toWorld(map.getCenter()), zoom: map.getZoom() };   // stay on the same blocks
+  document.querySelectorAll('.map-picker button').forEach(b => b.setAttribute('aria-pressed', b.value === mapName));
+  const id = ++switchId;
+  const swap = () => {
+    if (id !== switchId) return;
+    cfg = MAPS[mapName];
+    if (layer) map.removeLayer(layer);
+    layer = newLayer();
+    const reveal = () => { if (id === switchId) mapEl.classList.remove('fading'); };
+    layer.once('load', reveal);
+    setTimeout(reveal, 2000);   // fade back in even if some tiles are slow
+    layer.addTo(map);
+    const zoomLimit = maxZoom();
+    map.setMinZoom(MIN_ZOOM); map.setMaxZoom(zoomLimit);
+    map.setView(toLatLng(view.x, view.z), Math.max(MIN_ZOOM, Math.min(view.zoom, zoomLimit)), { animate: false });
+    $('compass').src = cfg.compass;
+  };
+  mapEl.classList.add('fading');
+  setTimeout(swap, layer ? FADE_MS : 0);
+}
+
+// Switching date: load the new date on top and drop the old one once it's ready, so there's no flash.
+// Resolves when the new date is on screen (the play loop waits for this).
+function showDate(i) {
+  dateIdx = i;
+  $('slider').value = i;
+  setCurrent(i);
+  history.replaceState(null, '', link());
+  const old = layer, next = newLayer();
+  layer = next;
+  return new Promise(done => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      // Leaflet fades each new tile in over 200ms after it loads. Remove the old date only once
+      // those fades are done, otherwise the black background shows through for a moment.
+      setTimeout(() => { if (old && map.hasLayer(old)) map.removeLayer(old); done(); }, 250);
+    };
+    next.once('load', finish);
+    setTimeout(finish, 3000);
+    next.addTo(map);
+  });
+}
+
+const label = d => new Date(d + 'T12:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+const share = i => dates.length > 1 ? i / (dates.length - 1) : 0;   // 0 at the oldest date, 1 at the newest
+
+// Date tag above the playhead. The playhead's centre runs from thumb/2 to (width - thumb/2), so match that.
+function setCurrent(i) {
+  const tag = $('current');
+  tag.textContent = label(dates[i]);
+  tag.style.left = `calc(var(--thumb) / 2 + (100% - var(--thumb)) * ${share(i)})`;
+  tag.style.setProperty('--p', share(i));
+}
+
+// Play: step through every date and loop back to the start, until paused or the slider is moved.
+let playing = false;
+async function play() {
+  playing = true; $('play').setAttribute('aria-pressed', 'true'); $('play').setAttribute('aria-label', 'Pause timelapse');
+  while (playing) {
+    await new Promise(r => setTimeout(r, HOLD_MS));
+    if (!playing) break;
+    await showDate((dateIdx + 1) % dates.length);
+  }
+}
+function pause() {
+  playing = false; $('play').setAttribute('aria-pressed', 'false'); $('play').setAttribute('aria-label', 'Play timelapse');
+}
+
+map.on('moveend', () => history.replaceState(null, '', link()));
+
+// Surface / Flat switch, between the zoom buttons and the location box.
+const MapPicker = L.Control.extend({
+  options: { position: 'topleft' },
+  onAdd() {
+    const div = L.DomUtil.create('div', 'map-picker');
+    div.setAttribute('role', 'group'); div.setAttribute('aria-label', 'Map');
+    for (const [value, text] of [['surface', 'Surface'], ['flat', 'Flat']]) {
+      const b = L.DomUtil.create('button', '', div);
+      b.type = 'button'; b.value = value; b.textContent = text;
+      L.DomEvent.on(b, 'click', () => { if (value !== mapName) { mapName = value; showMap(); } });
+    }
+    L.DomEvent.disableClickPropagation(div);
+    return div;
+  }
+});
+
+// Location box under the map switch.
+const Coords = L.Control.extend({
+  options: { position: 'topleft' },
+  onAdd() {
+    const div = L.DomUtil.create('div', 'coord-control');
+    div.innerHTML = 'Location:<b>---,---,---</b>';
+    const value = div.querySelector('b');
+    map.on('mousemove', e => { const { x, z } = toWorld(e.latlng); value.textContent = `${x},${Y},${z}`; });
+    map.on('mouseout', () => { value.textContent = '---,---,---'; });
+    return div;
+  }
+});
+
+// Link button, bottom left. Copies a link to this exact view.
+const Link = L.Control.extend({
+  options: { position: 'bottomleft' },
+  onAdd() {
+    const div = L.DomUtil.create('div', 'link-control');
+    const a = L.DomUtil.create('a', '', div);
+    a.href = '#'; a.title = 'Copy link to this view'; a.setAttribute('role', 'button');
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.on(a, 'click', async e => {
+      L.DomEvent.preventDefault(e);
+      const url = link();
+      history.replaceState(null, '', url);
+      let msg = 'Link copied';
+      try { await navigator.clipboard.writeText(url); } catch { msg = 'Copy the link from the address bar'; }
+      div.querySelector('.link-note')?.remove();
+      const note = L.DomUtil.create('span', 'link-note', div);
+      note.textContent = msg;
+      setTimeout(() => note.remove(), 2000);
+    });
+    return div;
+  }
+});
+
+// Keep drags and scrolls on the timeline from moving the map.
+L.DomEvent.disableClickPropagation($('timeline'));
+L.DomEvent.disableScrollPropagation($('timeline'));
+
+fetch('store/index.json').then(r => r.json()).then(index => {
+  tileIndex = index;                                   // snapshots are already oldest first
+  dates = index.snapshots.map(s => s.slice(0, 10));   // "2026-11-08T202912" -> "2026-11-08"
+  const start = readHash();
+  // A link's date opens that day's last snapshot; no date (or an unknown one) opens the newest.
+  dateIdx = dates.includes(start.date) ? dates.lastIndexOf(start.date) : dates.length - 1;
+  mapName = start.map;
+
+  const slider = $('slider');
+  slider.max = dates.length - 1;
+  slider.value = dateIdx;
+  $('first').textContent = label(dates[0]);
+  $('last').textContent = dates.length > 1 ? label(dates[dates.length - 1]) : '';
+  setCurrent(dateIdx);
+  $('ticks').innerHTML = dates.map((_, i) => `<span style="left:${share(i) * 100}%"></span>`).join('');
+  if (dates.length < 2) {
+    slider.disabled = $('play').disabled = true;
+    $('play').title = 'Only one snapshot so far';
+  }
+  slider.addEventListener('input', () => { pause(); showDate(+slider.value); });
+  $('play').addEventListener('click', () => {
+    if (playing) return pause();
+    if (dateIdx === dates.length - 1) showDate(0).then(play);   // at the end: start over from the first date
+    else play();
+  });
+
+  new MapPicker().addTo(map);   // added in this order so they stack under the zoom buttons
+  new Coords().addTo(map);
+  new Link().addTo(map);
+  showMap(start);
+});
+</script>
+</body>
+</html>
